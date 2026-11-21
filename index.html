@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>صانع الفيديو من الصور - بدون قيود</title>
+  <title>محول الصور إلى فيديو - بدون قيود</title>
   <style>
     * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
     body {
@@ -19,11 +19,12 @@
     h1 { margin: 0 0 16px; font-size: 1.25rem; text-align: center; color: #38bdf8; }
     .field { margin-bottom: 14px; }
     label { display: block; margin-bottom: 6px; font-size: 0.9rem; color: #cbd5e1; }
-    input, select {
+    input, select, textarea {
       width: 100%; padding: 10px; border-radius: 8px;
       border: 1px solid #475569; background: #0f172a; color: #fff;
       font-size: 0.95rem;
     }
+    textarea { min-height: 80px; resize: vertical; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     button {
       width: 100%; padding: 12px; border: none; border-radius: 10px;
@@ -45,7 +46,7 @@
 </head>
 <body>
   <div class="box">
-    <h1>محول الصور إلى فيديو (مباشر وبدون قيود)</h1>
+    <h1>محول الصور إلى فيديو (بدون قيود)</h1>
 
     <div class="field">
       <label>1. اختر صورة أو عدة صور:</label>
@@ -53,14 +54,14 @@
     </div>
 
     <div class="field">
-      <label>2. اختر ملف صوتي (اختياري):</label>
-      <input type="file" id="audio" accept="audio/*" />
+      <label>2. اكتب وصفًا أو نصًا يظهر على الفيديو:</label>
+      <textarea id="caption" placeholder="اكتب أي نص أو وصف هنا..."></textarea>
     </div>
 
     <div class="grid field">
       <div>
         <label>مدة كل صورة (ثانية):</label>
-        <input type="number" id="sec" value="3" min="1" max="60" />
+        <input type="number" id="sec" value="3" min="0.5" step="0.5" />
       </div>
       <div>
         <label>مقاس الفيديو:</label>
@@ -90,7 +91,7 @@
 
   <script>
     const imgsInput = document.getElementById('imgs');
-    const audioInput = document.getElementById('audio');
+    const captionInput = document.getElementById('caption');
     const secInput = document.getElementById('sec');
     const sizeSelect = document.getElementById('size');
     const motionSelect = document.getElementById('motion');
@@ -109,6 +110,49 @@
       })));
     }
 
+    function drawWrappedText(text, w, h) {
+      if (!text || !text.length) return;
+      const lines = text.split('\n');
+      const fontSize = Math.max(24, Math.round(Math.min(w, h) * 0.045));
+      ctx.font = `bold ${fontSize}px system-ui, -apple-system, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const wrapped = [];
+      const maxWidth = w * 0.88;
+      for (const rawLine of lines) {
+        const words = rawLine.split(/\s+/).filter(Boolean);
+        if (!words.length) {
+          wrapped.push('');
+          continue;
+        }
+        let current = words[0];
+        for (let i = 1; i < words.length; i++) {
+          const test = current + ' ' + words[i];
+          if (ctx.measureText(test).width <= maxWidth) {
+            current = test;
+          } else {
+            wrapped.push(current);
+            current = words[i];
+          }
+        }
+        wrapped.push(current);
+      }
+
+      const lineHeight = fontSize * 1.35;
+      const boxHeight = wrapped.length * lineHeight + fontSize * 0.8;
+      const boxY = h - boxHeight - h * 0.06;
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+      ctx.fillRect(w * 0.05, boxY, w * 0.9, boxHeight);
+
+      ctx.fillStyle = '#ffffff';
+      wrapped.forEach((line, i) => {
+        const y = boxY + fontSize * 0.4 + (i + 0.5) * lineHeight;
+        ctx.fillText(line, w / 2, y);
+      });
+    }
+
     startBtn.addEventListener('click', async () => {
       if (!imgsInput.files.length) {
         statusEl.textContent = 'اختر صورة واحدة على الأقل أولًا.';
@@ -119,79 +163,84 @@
       downloadBtn.style.display = 'none';
       statusEl.textContent = 'جاري تحميل الصور...';
 
-      const [w, h] = sizeSelect.value.split('x').map(Number);
-      canvas.width = w;
-      canvas.height = h;
-      canvas.style.aspectRatio = `${w}/${h}`;
+      try {
+        const [w, h] = sizeSelect.value.split('x').map(Number);
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.aspectRatio = `${w}/${h}`;
 
-      const images = await readImages(imgsInput.files);
-      const fps = 30;
-      const framesPerImg = Math.max(1, Number(secInput.value)) * fps;
-      const totalFrames = images.length * framesPerImg;
-      const motion = motionSelect.value;
+        const images = await readImages(imgsInput.files);
+        const fps = 30;
+        const secVal = Math.max(0.5, Number(secInput.value) || 3);
+        const framesPerImg = Math.max(1, Math.round(secVal * fps));
+        const totalFrames = images.length * framesPerImg;
+        const motion = motionSelect.value;
+        const captionText = captionInput.value;
 
-      const stream = canvas.captureStream(fps);
-      let finalStream = stream;
-      let audioEl = null;
+        const stream = canvas.captureStream(fps);
+        const chunks = [];
+        const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+        const recorder = new MediaRecorder(stream, { mimeType });
 
-      if (audioInput.files.length > 0) {
-        audioEl = new Audio(URL.createObjectURL(audioInput.files[0]));
-        const audioCtx = new AudioContext();
-        const src = audioCtx.createMediaElementSource(audioEl);
-        const dest = audioCtx.createMediaStreamDestination();
-        src.connect(dest);
-        src.connect(audioCtx.destination);
-        finalStream = new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
-      }
+        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+        recorder.onstop = () => {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          downloadBtn.href = URL.createObjectURL(blob);
+          downloadBtn.style.display = 'block';
+          statusEl.textContent = 'اكتمل التحويل! يمكنك تحميل الفيديو الآن.';
+          startBtn.disabled = false;
+        };
 
-      const chunks = [];
-      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
-      const recorder = new MediaRecorder(finalStream, { mimeType });
+        recorder.start();
 
-      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-      recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        downloadBtn.href = URL.createObjectURL(blob);
-        downloadBtn.style.display = 'block';
-        statusEl.textContent = 'اكتمل التحويل! يمكنك تحميل الفيديو الآن.';
+        let frame = 0;
+        function draw() {
+          if (frame >= totalFrames) {
+            recorder.stop();
+            return;
+          }
+
+          const idx = Math.floor(frame / framesPerImg);
+          const f = frame % framesPerImg;
+          const p = f / framesPerImg;
+          const img = images[idx];
+
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, w, h);
+
+          const baseScale = Math.max(w / img.width, h / img.height);
+          let scale = 1;
+          let dx = 0;
+
+          if (motion === 'zoomIn') scale = 1 + p * 0.15;
+          else if (motion === 'zoomOut') scale = 1.15 - p * 0.15;
+          else if (motion === 'pan') {
+            scale = 1.12;
+            dx = (p - 0.5) * (w * 0.08);
+          }
+
+          const drawW = img.width * baseScale * scale;
+          const drawH = img.height * baseScale * scale;
+          const x = (w - drawW) / 2 + dx;
+          const y = (h - drawH) / 2;
+
+          ctx.globalAlpha = f < 8 ? f / 8 : 1;
+          ctx.drawImage(img, x, y, drawW, drawH);
+          ctx.globalAlpha = 1;
+
+          drawWrappedText(captionText, w, h);
+
+          statusEl.textContent = `جاري المعالجة... ${Math.round((frame / totalFrames) * 100)}%`;
+          frame++;
+          setTimeout(() => requestAnimationFrame(draw), 1000 / fps);
+        }
+
+        draw();
+      } catch (err) {
+        statusEl.textContent = 'تعذر بدء التحويل في هذا المتصفح.';
         startBtn.disabled = false;
-        if (audioEl) audioEl.pause();
-      };
-
-      recorder.start();
-      if (audioEl) await audioEl.play().catch(() => {});
-
-      let frame = 0;
-      function draw() {
-        if (frame >= totalFrames) {
-          recorder.stop();
-          return;
-        }
-
-        const idx = Math.floor(frame / framesPerImg);
-        const f = frame % framesPerImg;
-        const p = f / framesPerImg;
-        const img = images[idx];
-
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, w, h);
-
-        const baseScale = Math.max(w / img.width, h / img.height);
-        let scale = 1;
-        let dx = 0;
-
-        if (motion === 'zoomIn') scale = 1 + p * 0.15;
-        else if (motion === 'zoomOut') scale = 1.15 - p * 0.15;
-        else if (motion === 'pan') {
-          scale = 1.12;
-          dx = (p - 0.5) * (w * 0.08);
-        }
-
-        const drawW = img.width * baseScale * scale;
-        const drawH = img.height * baseScale * scale;
-        const x = (w - drawW) / 2 + dx;
-        const y = (h - drawH) / 2;
-
-        ctx.globalAlpha = f < 8 ? f / 8 : 1;
-        ctx.drawImage(img, x, y, drawW, drawH);
-        ctx.global
+      }
+    });
+  </script>
+</body>
+  </html>
