@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>صانع الفيديو من الصور - بدون قيود</title>
+  <style>
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+    body {
+      margin: 0; padding: 16px;
+      background: #0b1120; color: #f8fafc;
+      display: flex; justify-content: center;
+    }
+    .box {
+      width: 100%; max-width: 580px;
+      background: #1e293b; padding: 18px;
+      border-radius: 14px; border: 1px solid #334155;
+    }
+    h1 { margin: 0 0 16px; font-size: 1.25rem; text-align: center; color: #38bdf8; }
+    .field { margin-bottom: 14px; }
+    label { display: block; margin-bottom: 6px; font-size: 0.9rem; color: #cbd5e1; }
+    input, select {
+      width: 100%; padding: 10px; border-radius: 8px;
+      border: 1px solid #475569; background: #0f172a; color: #fff;
+      font-size: 0.95rem;
+    }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    button {
+      width: 100%; padding: 12px; border: none; border-radius: 10px;
+      background: #0284c7; color: #fff; font-size: 1rem; font-weight: bold;
+      cursor: pointer;
+    }
+    button:disabled { background: #64748b; }
+    #status { margin-top: 10px; text-align: center; color: #facc15; font-size: 0.9rem; }
+    canvas {
+      width: 100%; margin-top: 14px; background: #000;
+      border-radius: 10px; display: block;
+    }
+    #downloadBtn {
+      display: none; margin-top: 12px; text-align: center;
+      padding: 12px; border-radius: 10px; background: #16a34a;
+      color: #fff; text-decoration: none; font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>محول الصور إلى فيديو (مباشر وبدون قيود)</h1>
+
+    <div class="field">
+      <label>1. اختر صورة أو عدة صور:</label>
+      <input type="file" id="imgs" accept="image/*" multiple />
+    </div>
+
+    <div class="field">
+      <label>2. اختر ملف صوتي (اختياري):</label>
+      <input type="file" id="audio" accept="audio/*" />
+    </div>
+
+    <div class="grid field">
+      <div>
+        <label>مدة كل صورة (ثانية):</label>
+        <input type="number" id="sec" value="3" min="1" max="60" />
+      </div>
+      <div>
+        <label>مقاس الفيديو:</label>
+        <select id="size">
+          <option value="1280x720">16:9 أفقي</option>
+          <option value="720x1280">9:16 عمودي</option>
+          <option value="1080x1080">1:1 مربع</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>نوع الحركة:</label>
+      <select id="motion">
+        <option value="zoomIn">تقريب بطيء</option>
+        <option value="zoomOut">تبعيد بطيء</option>
+        <option value="pan">تحريك أفقي</option>
+        <option value="static">ثابت</option>
+      </select>
+    </div>
+
+    <button id="startBtn">تحويل إلى فيديو الآن</button>
+    <div id="status"></div>
+    <canvas id="c" width="1280" height="720" style="aspect-ratio:16/9;"></canvas>
+    <a id="downloadBtn" download="video.webm">تحميل الفيديو</a>
+  </div>
+
+  <script>
+    const imgsInput = document.getElementById('imgs');
+    const audioInput = document.getElementById('audio');
+    const secInput = document.getElementById('sec');
+    const sizeSelect = document.getElementById('size');
+    const motionSelect = document.getElementById('motion');
+    const startBtn = document.getElementById('startBtn');
+    const statusEl = document.getElementById('status');
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const downloadBtn = document.getElementById('downloadBtn');
+
+    function readImages(fileList) {
+      return Promise.all(Array.from(fileList).map(file => new Promise((res, rej) => {
+        const img = new Image();
+        img.onload = () => res(img);
+        img.onerror = rej;
+        img.src = URL.createObjectURL(file);
+      })));
+    }
+
+    startBtn.addEventListener('click', async () => {
+      if (!imgsInput.files.length) {
+        statusEl.textContent = 'اختر صورة واحدة على الأقل أولًا.';
+        return;
+      }
+
+      startBtn.disabled = true;
+      downloadBtn.style.display = 'none';
+      statusEl.textContent = 'جاري تحميل الصور...';
+
+      const [w, h] = sizeSelect.value.split('x').map(Number);
+      canvas.width = w;
+      canvas.height = h;
+      canvas.style.aspectRatio = `${w}/${h}`;
+
+      const images = await readImages(imgsInput.files);
+      const fps = 30;
+      const framesPerImg = Math.max(1, Number(secInput.value)) * fps;
+      const totalFrames = images.length * framesPerImg;
+      const motion = motionSelect.value;
+
+      const stream = canvas.captureStream(fps);
+      let finalStream = stream;
+      let audioEl = null;
+
+      if (audioInput.files.length > 0) {
+        audioEl = new Audio(URL.createObjectURL(audioInput.files[0]));
+        const audioCtx = new AudioContext();
+        const src = audioCtx.createMediaElementSource(audioEl);
+        const dest = audioCtx.createMediaStreamDestination();
+        src.connect(dest);
+        src.connect(audioCtx.destination);
+        finalStream = new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+      }
+
+      const chunks = [];
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+      const recorder = new MediaRecorder(finalStream, { mimeType });
+
+      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        downloadBtn.href = URL.createObjectURL(blob);
+        downloadBtn.style.display = 'block';
+        statusEl.textContent = 'اكتمل التحويل! يمكنك تحميل الفيديو الآن.';
+        startBtn.disabled = false;
+        if (audioEl) audioEl.pause();
+      };
+
+      recorder.start();
+      if (audioEl) await audioEl.play().catch(() => {});
+
+      let frame = 0;
+      function draw() {
+        if (frame >= totalFrames) {
+          recorder.stop();
+          return;
+        }
+
+        const idx = Math.floor(frame / framesPerImg);
+        const f = frame % framesPerImg;
+        const p = f / framesPerImg;
+        const img = images[idx];
+
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+
+        const baseScale = Math.max(w / img.width, h / img.height);
+        let scale = 1;
+        let dx = 0;
+
+        if (motion === 'zoomIn') scale = 1 + p * 0.15;
+        else if (motion === 'zoomOut') scale = 1.15 - p * 0.15;
+        else if (motion === 'pan') {
+          scale = 1.12;
+          dx = (p - 0.5) * (w * 0.08);
+        }
+
+        const drawW = img.width * baseScale * scale;
+        const drawH = img.height * baseScale * scale;
+        const x = (w - drawW) / 2 + dx;
+        const y = (h - drawH) / 2;
+
+        ctx.globalAlpha = f < 8 ? f / 8 : 1;
+        ctx.drawImage(img, x, y, drawW, drawH);
+        ctx.global
